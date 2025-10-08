@@ -866,7 +866,7 @@ st.markdown("""
 # Footer
 footer = """
 <div class="footer">
-    <p>© 2025 My Streamlit App. All rights reserved. | Temitope E. Dada, Silas E. Oluwadahunsi, Guobin Gong, Jun Xia, Luigi Di Sarno | For Queries: <a href="mailto: T.Dada19@student.xjtlu.edu.cn"> T.Dada19@student.xjtlu.edu.cn</a></p>
+    <p>© 2025 My Streamlit App. All rights reserved. | Temitope E. Dada, Silas E. Oluwadahunsi, Guobin Gong, Jun Xia and Luigi Di Sarno | For Queries: <a href="mailto: T.Dada19@student.xjtlu.edu.cn"> T.Dada19@student.xjtlu.edu.cn</a></p>
 </div>
 """
 st.markdown(footer, unsafe_allow_html=True)
