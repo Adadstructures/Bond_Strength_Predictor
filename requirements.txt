@@ -1,10 +1,10 @@
-streamlit==1.38.0
+streamlit
 numpy==1.26.4
-pandas==2.2.2
+pandas==2.2.3
 catboost==1.2.7
 shap==0.45.1
-joblib==1.4.2
-matplotlib==3.9.2
+joblib
+matplotlib
 chromadb==0.5.0
 sentence-transformers==3.0.1
 scipy==1.13.1
@@ -13,4 +13,5 @@ properscoring==0.1
 nltk==3.8.1
 fuzzywuzzy==0.18.0
 python-dotenv==1.0.1
-scikit-learn==1.5.1
+scikit-learn
+optuna
