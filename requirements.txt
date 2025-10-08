@@ -1,0 +1,16 @@
+streamlit==1.50.0
+numpy==1.26.4
+pandas==2.3.3
+catboost==1.2.7
+shap==0.46.0
+joblib==1.5.2
+matplotlib==3.10.6
+chromadb==0.4.3
+sentence-transformers==3.0.1
+scipy==1.13.1
+requests==2.32.5
+properscoring==0.1
+nltk==3.9.2
+fuzzywuzzy==0.18.0
+python-Levenshtein==0.25.1
+python-dotenv==1.1.1
