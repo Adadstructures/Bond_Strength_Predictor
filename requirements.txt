@@ -14,3 +14,7 @@ nltk==3.8.1
 fuzzywuzzy==0.18.0
 python-dotenv==1.0.1
 scikit-learn==1.5.1
+torch==2.1.2+cpu
+torchvision==0.16.2+cpu
+torchaudio==2.1.2+cpu
+--extra-index-url https://download.pytorch.org/whl/cpu
