@@ -15,6 +15,8 @@ import logging
 import os
 from properscoring import crps_gaussian
 import nltk
+import tempfile
+import shutil
 
 nltk.download('punkt')
 nltk.download('averaged_perceptron_tagger')
@@ -53,13 +55,20 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 os.environ["CHROMADB_TELEMETRY_ENABLED"] = "false"
 
-# Load ChromaDB collection
-client = chromadb.PersistentClient(path=chroma_path)
+
+# Copy chroma_db to a writable temp folder (Streamlit Cloud needs writable folder)
+tmp_chroma_path = tempfile.mkdtemp()
+shutil.copytree("chroma_db", tmp_chroma_path, dirs_exist_ok=True)
+
+# Initialize PersistentClient in temp folder
 try:
+    client = chromadb.PersistentClient(path=tmp_chroma_path)
     collection = client.get_collection("pdf_chunks")
     logger.info(f"Loaded ChromaDB collection 'pdf_chunks' with {collection.count()} items.")
-except Exception:
-    logger.warning("Failed to load 'pdf_chunks' collection. Falling back to no literature guidance.")
+except Exception as e:
+    logger.warning(f"Failed to load 'pdf_chunks' collection: {e}. Falling back to no literature guidance.")
+    collection = None
+
     collection = None
 
 embedder = SentenceTransformer("BAAI/bge-large-en-v1.5")
