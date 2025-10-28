@@ -7,7 +7,6 @@ import joblib
 import matplotlib.pyplot as plt
 import chromadb
 from catboost import CatBoostRegressor, Pool
-from sentence_transformers import SentenceTransformer, util
 import requests
 import json
 import re
@@ -17,6 +16,9 @@ from properscoring import crps_gaussian
 import nltk
 import tempfile
 import shutil
+shutil.rmtree("/root/.cache/huggingface", ignore_errors=True)
+from sentence_transformers import SentenceTransformer, util
+
 # Force pure-CPU mode
 os.environ["CUDA_VISIBLE_DEVICES"] = ""      # hide any GPU
 import torch
