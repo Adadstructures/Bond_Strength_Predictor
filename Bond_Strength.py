@@ -71,7 +71,8 @@ except Exception as e:
 
     collection = None
 
-embedder = SentenceTransformer("BAAI/bge-large-en-v1.5")
+embedder = SentenceTransformer("BAAI/bge-large-en-v1.5", device="cpu")
+
 
 # Load model and scalers
 try:
