@@ -7,14 +7,16 @@ shap==0.45.0
 joblib==1.4.2
 matplotlib==3.9.2
 chromadb==0.5.0
-sentence-transformers==3.0.1
 requests==2.32.3
 properscoring==0.1
 nltk==3.8.1
 fuzzywuzzy==0.18.0
 python-dotenv==1.0.1
 scikit-learn==1.5.1
-torch==2.1.2+cpu
+torch==2.1.0+cpu
 torchvision==0.16.2+cpu
 torchaudio==2.1.2+cpu
 --extra-index-url https://download.pytorch.org/whl/cpu
+sentence-transformers==2.2.2
+transformers==4.33.2
+
