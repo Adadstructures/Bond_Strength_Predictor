@@ -17,6 +17,10 @@ from properscoring import crps_gaussian
 import nltk
 import tempfile
 import shutil
+# Force pure-CPU mode
+os.environ["CUDA_VISIBLE_DEVICES"] = ""      # hide any GPU
+import torch
+
 
 nltk.download('punkt')
 nltk.download('averaged_perceptron_tagger')
@@ -69,9 +73,31 @@ except Exception as e:
     logger.warning(f"Failed to load 'pdf_chunks' collection: {e}. Falling back to no literature guidance.")
     collection = None
 
-    collection = None
+# ------------------------------------------------------------------
+#  SAFE EMBEDDER INITIALISATION (replace the old line)
+# ------------------------------------------------------------------
 
-embedder = SentenceTransformer("BAAI/bge-large-en-v1.5", device="cpu")
+
+
+torch.set_num_threads(2)                     # keep Streamlit happy
+
+try:
+    embedder = SentenceTransformer(
+        "BAAI/bge-large-en-v1.5",
+        device="cpu"
+    )
+    # Defensive move-to-CPU (bypasses the buggy conversion)
+    with torch.no_grad():
+        for mod in embedder.modules():
+            if hasattr(mod, "to"):
+                try:
+                    mod.to("cpu")
+                except NotImplementedError:
+                    pass
+    logger.info("SentenceTransformer loaded on CPU")
+except Exception as e:
+    logger.warning(f"SentenceTransformer failed ({e}); literature search disabled")
+    embedder = None
 
 
 # Load model and scalers
@@ -497,6 +523,8 @@ if st.session_state.prediction_data:
             except:
                 return {"score": 0}
 
+                  
+            
         def evaluate_physical_groundedness(llm_json, literature, ils_results, mean_abs_shap_dict):
             try:
                 if not llm_json or len(llm_json["summary_paragraphs"]) != 3:
@@ -514,32 +542,24 @@ if st.session_state.prediction_data:
                     dir_word = "increases" if slope > 0.01 else "decreases" if slope < -0.01 else "neutral"
                     if dir_word in p2.lower() or dir_word in p3.lower():
                         score += 1
-                lit_text = " ".join([v for v in literature.values() if v])[:1000]
-                if lit_text:
-                    try:
-                        lit_emb = embedder.encode(lit_text)
-                        p3_emb = embedder.encode(p3[:1000])
-                        sim = util.cos_sim(lit_emb, p3_emb).item()
-                        score += sim * 2
-                        max_score += 2
-                    except:
-                        pass
+
+                # ← ADD THIS GUARD
+                if embedder is not None:
+                    lit_text = " ".join([v for v in literature.values() if v])[:1000]
+                    if lit_text:
+                        try:
+                            lit_emb = embedder.encode(lit_text)
+                            p3_emb = embedder.encode(p3[:1000])
+                            sim = util.cos_sim(lit_emb, p3_emb).item()
+                            score += sim * 2
+                            max_score += 2
+                        except:
+                            pass
+                # ← END GUARD
+
                 return {"score": round((score / max_score) * 100, 2) if max_score else 0}
             except:
                 return {"score": 0}
-
-        num_faith = evaluate_numerical_faithfulness(llm_json, results_df, pred, reliability, uncertainty_metrics)
-        phys_faith = evaluate_physical_groundedness(llm_json, literature, ils_results, mean_abs_shap_dict)
-        grand_composite = round(0.6 * num_faith["score"] + 0.4 * phys_faith["score"], 2)
-
-        st.subheader("LLM Explanation Quality")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.markdown(f"**Numerical Faithfulness**\n{num_faith['score']:.2f}%")
-        with col2:
-            st.markdown(f"**Physical Groundedness**\n{phys_faith['score']:.2f}%")
-        with col3:
-            st.markdown(f"**Grand Composite**\n{grand_composite:.2f}%")
 
 # === QUERY SECTION (Persistent Chat) ===
 st.markdown("### Ask a Question")
