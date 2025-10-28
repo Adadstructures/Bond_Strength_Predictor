@@ -18,3 +18,4 @@ torchvision==0.16.2
 torchaudio==2.1.2
 sentence-transformers==2.2.2
 transformers==4.30.2
+huggingface_hub==0.13.4
