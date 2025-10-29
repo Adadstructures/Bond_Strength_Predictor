@@ -1,19 +1,12 @@
-# --- CPU-ONLY TORCH ---
+# --- CPU TORCH ---
 torch==2.1.2+cpu
 torchvision==0.16.2+cpu
-torchaudio==2.1.2+cpu
 --extra-index-url https://download.pytorch.org/whl/cpu
-
-# --- HUGGINGFACE ECOSYSTEM (PINNED) ---
-huggingface_hub==0.23.0
-transformers==4.36.2
-sentence-transformers==2.7.0
 
 # --- CORE ---
 streamlit==1.38.0
 numpy==1.26.4
 pandas==2.2.3
-scipy==1.13.1
 catboost==1.2.7
 shap==0.45.0
 joblib==1.4.2
@@ -21,5 +14,9 @@ matplotlib==3.9.2
 chromadb==0.5.0
 requests==2.32.3
 properscoring==0.1
-nltk==3.8.1
 scikit-learn==1.5.1
+
+# --- LIGHTWEIGHT HF ---
+sentence-transformers==2.7.0
+transformers==4.36.2
+huggingface_hub==0.23.0

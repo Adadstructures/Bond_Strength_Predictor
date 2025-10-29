@@ -7,6 +7,7 @@ import joblib
 import matplotlib.pyplot as plt
 import chromadb
 from catboost import CatBoostRegressor, Pool
+from sentence_transformers import SentenceTransformer, util
 import requests
 import json
 import re
@@ -14,18 +15,14 @@ import logging
 import os
 from properscoring import crps_gaussian
 import nltk
-import tempfile
-import shutil
-shutil.rmtree("/root/.cache/huggingface", ignore_errors=True)
-from sentence_transformers import SentenceTransformer, util
+import torch
 
 # Force pure-CPU mode
 os.environ["CUDA_VISIBLE_DEVICES"] = ""      # hide any GPU
-import torch
+os.environ["CHROMADB_TELEMETRY_ENABLED"] = "false"
+torch.set_num_threads(2)
 
-
-nltk.download('punkt')
-nltk.download('averaged_perceptron_tagger')
+nltk.data.path.append("./nltk_data")  # Pre-downloaded
 
 # -------------------------
 # Config (relative paths)
@@ -47,6 +44,8 @@ if not OPENROUTER_API_KEY:
     st.error("OpenRouter API key not found. Set it in `.streamlit/secrets.toml`.")
     st.stop()
 
+USE_LITERATURE = st.secrets.get("general", {}).get("USE_LITERATURE", "0") in ["1", "true", "True"]
+
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODEL = "openai/gpt-4o-mini"
 OPENROUTER_HEADERS = {
@@ -59,59 +58,51 @@ OPENROUTER_HEADERS = {
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-os.environ["CHROMADB_TELEMETRY_ENABLED"] = "false"
 
-
-# Copy chroma_db to a writable temp folder (Streamlit Cloud needs writable folder)
-tmp_chroma_path = tempfile.mkdtemp()
-shutil.copytree("chroma_db", tmp_chroma_path, dirs_exist_ok=True)
-
-# Initialize PersistentClient in temp folder
-try:
-    client = chromadb.PersistentClient(path=tmp_chroma_path)
-    collection = client.get_collection("pdf_chunks")
-    logger.info(f"Loaded ChromaDB collection 'pdf_chunks' with {collection.count()} items.")
-except Exception as e:
-    logger.warning(f"Failed to load 'pdf_chunks' collection: {e}. Falling back to no literature guidance.")
-    collection = None
-
-# ------------------------------------------------------------------
-#  SAFE EMBEDDER INITIALISATION (replace the old line)
-# ------------------------------------------------------------------
-
-
-
-torch.set_num_threads(2)                     # keep Streamlit happy
-
-try:
-    embedder = SentenceTransformer(
-        "BAAI/bge-large-en-v1.5",
-        device="cpu"
-    )
-    # Defensive move-to-CPU (bypasses the buggy conversion)
-    with torch.no_grad():
-        for mod in embedder.modules():
-            if hasattr(mod, "to"):
-                try:
-                    mod.to("cpu")
-                except NotImplementedError:
-                    pass
-    logger.info("SentenceTransformer loaded on CPU")
-except Exception as e:
-    logger.warning(f"SentenceTransformer failed ({e}); literature search disabled")
-    embedder = None
-
-
-# Load model and scalers
-try:
+# =========================
+# CACHED LOADERS
+# =========================
+@st.cache_resource
+def load_models():
     model = CatBoostRegressor()
     model.load_model(os.path.join(model_dir, "catboost_mean.cbm"))
-    scaler_X = joblib.load(os.path.join(model_dir, "scaler.pkl"))
+    scaler = joblib.load(os.path.join(model_dir, "scaler.pkl"))
     with open(os.path.join(model_dir, "conformal_quantile.pkl"), "rb") as f:
-        conformal_quantile = pickle.load(f)
-except Exception as e:
-    st.error(f"Failed to load model or scalers: {e}")
-    st.stop()
+        q = pickle.load(f)
+    return model, scaler, q
+
+@st.cache_resource
+def load_embedder():
+    if not USE_LITERATURE:
+        return None
+    try:
+        model = SentenceTransformer("all-MiniLM-L6-v2", device="cpu")
+        with torch.no_grad():
+            for mod in model.modules():
+                if hasattr(mod, "to"):
+                    try: mod.to("cpu")
+                    except: pass
+        return model
+    except Exception as e:
+        logger.warning(f"Embedder load failed: {e}")
+        return None
+
+@st.cache_resource
+def load_chroma():
+    if not USE_LITERATURE or not os.path.exists(chroma_path):
+        return None
+    try:
+        client = chromadb.PersistentClient(path=chroma_path)
+        collection = client.get_collection("pdf_chunks")
+        logger.info(f"Loaded ChromaDB collection 'pdf_chunks' with {collection.count()} items.")
+        return collection
+    except Exception as e:
+        logger.warning(f"Failed to load 'pdf_chunks' collection: {e}. Falling back to no literature guidance.")
+        return None
+
+model, scaler_X, conformal_quantile = load_models()
+embedder = load_embedder()
+collection = load_chroma()
 
 # Initialize session state
 if 'prediction_data' not in st.session_state:
@@ -170,7 +161,7 @@ def try_parse_json(text):
         return None
 
 def query_literature(feature, collection, embedder, n_results=3):
-    if not collection:
+    if not collection or not embedder:
         return ""
     q = f"Effect of {feature_map[feature]} on bond strength of FRP-concrete systems"
     try:
@@ -342,13 +333,14 @@ if st.session_state.prediction_data:
             shap.summary_plot(shap_values, pred_data["input_scaled"], feature_names=display_features, plot_type="bar", show=False)
             plt.title("Feature Importance (Mean |SHAP|)")
             st.pyplot(fig)
+            plt.close(fig)
         except Exception as e:
             st.warning(f"SHAP plot failed: {e}")
 
         # ILS
         st.subheader("Individual Local Sensitivity (ILS) Plot")
         ils_results = {}
-        n_points = 50
+        n_points = 20  # Reduced from 50
         for f in raw_features:
             try:
                 user_val = pred_data["input_df"][f].iloc[0]
@@ -386,6 +378,7 @@ if st.session_state.prediction_data:
             plt.legend()
             plt.grid(True, linestyle="--", alpha=0.6)
             st.pyplot(fig)
+            plt.close(fig)
         except Exception as e:
             st.warning(f"ILS plot failed: {e}")
 
@@ -488,131 +481,56 @@ if st.session_state.prediction_data:
         for para in llm_json["summary_paragraphs"]:
             st.markdown(para)
 
-        # === FAITHFULNESS EVALUATION (FIXED SYNTAX) ===
-        def evaluate_numerical_faithfulness(llm_json, results_df, pred, reliability, uncertainty_metrics):
-            try:
-                if not llm_json or len(llm_json["summary_paragraphs"]) != 3:
-                    return {"score": 0}
-                paragraphs = llm_json["summary_paragraphs"]
-                gt = {
-                    "pred": round(float(pred), 2),
-                    "rel": reliability,
-                    "unc": uncertainty_metrics,
-                    "feat": {row["Feature"]: {"shap": row["Mean|SHAP|"], "ils": row["ILS Slope"]} for _, row in results_df.iterrows()}
-                }
-                score = 0
-                max_score = 6 + 2*len(raw_features)
-                for pat, val in [
-                    (r"bond strength of[^\d]*([+-]?\d+\.\d{1,})", gt["pred"]),
-                    (r"\bPf[^\d]*([+-]?\d+\.\d{1,})", gt["rel"]["Pf"]),
-                    (r"\bBeta[^\d]*([+-]?\d+\.\d{1,})", gt["rel"]["Beta"]),
-                    (r"\bPIW[^\d]*([+-]?\d+\.\d{1,})", gt["unc"]["PIW"]),
-                    (r"\bCWC[^\d]*([+-]?\d+\.\d{1,})", gt["unc"]["CWC"]),
-                    (r"\bCRPS[^\d]*([+-]?\d+\.\d{1,})", gt["unc"]["CRPS"]),
-                ]:
-                    m = re.search(pat, paragraphs[0], re.IGNORECASE)
-                    if m and compare_numerics(m.group(1), val):
-                        score += 1
-                for f in raw_features:
-                    disp = feature_map[f]
-                    m_shap = re.search(rf"{disp}.*?Mean\|SHAP\|.*?([+-]?\d+\.\d{{1,}})", paragraphs[1], re.IGNORECASE)
-                    m_ils = re.search(rf"{disp}.*?ILS Slope.*?([+-]?\d+\.\d{{1,}})", paragraphs[1], re.IGNORECASE)
-                    if m_shap and compare_numerics(m_shap.group(1), gt["feat"][disp]["shap"]):
-                        score += 1
-                    if m_ils and compare_numerics(m_ils.group(1), gt["feat"][disp]["ils"]):
-                        score += 1
-                return {"score": round((score / max_score) * 100, 2)}
-            except:
-                return {"score": 0}
+        # === QUERY SECTION (Persistent Chat) ===
+        st.markdown("### Ask a Question")
+        with st.container():
+            st.markdown('<div class="query-box">', unsafe_allow_html=True)
 
-                  
-            
-        def evaluate_physical_groundedness(llm_json, literature, ils_results, mean_abs_shap_dict):
-            try:
-                if not llm_json or len(llm_json["summary_paragraphs"]) != 3:
-                    return {"score": 0}
-                p2, p3 = llm_json["summary_paragraphs"][1], llm_json["summary_paragraphs"][2]
-                score = 0
-                max_score = 0
-                top2 = sorted(mean_abs_shap_dict.items(), key=lambda x: abs(x[1]), reverse=True)[:2]
-                for f, _ in top2:
-                    disp = feature_map[f]
-                    max_score += 2
-                    if disp.lower() in p2.lower() or disp.lower() in p3.lower():
-                        score += 1
-                    slope = ils_results[f]["stats"]["slope_mean"]
-                    dir_word = "increases" if slope > 0.01 else "decreases" if slope < -0.01 else "neutral"
-                    if dir_word in p2.lower() or dir_word in p3.lower():
-                        score += 1
+            query_enabled = st.session_state.prediction_data is not None
 
-                # ← ADD THIS GUARD
-                if embedder is not None:
-                    lit_text = " ".join([v for v in literature.values() if v])[:1000]
-                    if lit_text:
-                        try:
-                            lit_emb = embedder.encode(lit_text)
-                            p3_emb = embedder.encode(p3[:1000])
-                            sim = util.cos_sim(lit_emb, p3_emb).item()
-                            score += sim * 2
-                            max_score += 2
-                        except:
-                            pass
-                # ← END GUARD
+            with st.form(key="query_form"):
+                query = st.text_input(
+                    "Enter your question about bond strength, reliability, or feature effects",
+                    value=st.session_state.query_text,
+                    placeholder="e.g., What is the significance of the bond strength prediction?",
+                    disabled=not query_enabled
+                )
+                col1, col2 = st.columns([1, 3])
+                with col1:
+                    submit_button = st.form_submit_button("Submit Query")
+                with col2:
+                    clear_button = st.form_submit_button("Clear Chat")
 
-                return {"score": round((score / max_score) * 100, 2) if max_score else 0}
-            except:
-                return {"score": 0}
+            if submit_button and query.strip() and query_enabled:
+                with st.spinner("Thinking..."):
+                    st.session_state.query_text = query
+                    prompt = f"""
+                    Answer using only the following data:
+                    - Prediction: {pred_data['pred']:.2f} kN
+                    - Reliability: Class={pred_data['reliability']['class']}, Pf={pred_data['reliability']['Pf']:.2f}
+                    - Uncertainty: PIW={pred_data['uncertainty_metrics']['PIW']:.2f}, CRPS={pred_data['uncertainty_metrics']['CRPS']:.2f}
+                    Question: {query}
+                    """
+                    response = call_openrouter(prompt) or "No response."
+                    st.session_state.chat_history.append({"question": query, "answer": response})
 
-# === QUERY SECTION (Persistent Chat) ===
-st.markdown("### Ask a Question")
-with st.container():
-    st.markdown('<div class="query-box">', unsafe_allow_html=True)
+            if clear_button:
+                st.session_state.chat_history = []
+                st.session_state.query_text = ""
+                st.rerun()
 
-    query_enabled = st.session_state.prediction_data is not None
+            st.markdown('</div>', unsafe_allow_html=True)
 
-    with st.form(key="query_form"):
-        query = st.text_input(
-            "Enter your question about bond strength, reliability, or feature effects",
-            value=st.session_state.query_text,
-            placeholder="e.g., What is the significance of the bond strength prediction?",
-            disabled=not query_enabled
-        )
-        col1, col2 = st.columns([1, 3])
-        with col1:
-            submit_button = st.form_submit_button("Submit Query")
-        with col2:
-            clear_button = st.form_submit_button("Clear Chat")
-
-    if submit_button and query.strip() and query_enabled:
-        with st.spinner("Thinking..."):
-            st.session_state.query_text = query
-            prompt = f"""
-            Answer using only the following data:
-            - Prediction: {pred_data['pred']:.2f} kN
-            - Reliability: Class={pred_data['reliability']['class']}, Pf={pred_data['reliability']['Pf']:.2f}
-            - Uncertainty: PIW={pred_data['uncertainty_metrics']['PIW']:.2f}, CRPS={pred_data['uncertainty_metrics']['CRPS']:.2f}
-            Question: {query}
-            """
-            response = call_openrouter(prompt) or "No response."
-            st.session_state.chat_history.append({"question": query, "answer": response})
-
-    if clear_button:
-        st.session_state.chat_history = []
-        st.session_state.query_text = ""
-        st.rerun()
-
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    if st.session_state.chat_history:
-        st.markdown('<div class="chat-container">', unsafe_allow_html=True)
-        for i, chat in enumerate(st.session_state.chat_history):
-            st.markdown(f"**Q{i+1}:** {chat['question']}")
-            st.markdown(f'<div class="response-box">{chat["answer"]}</div>', unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-    elif query_enabled:
-        st.markdown("*Ask a question about the prediction above.*")
-    else:
-        st.markdown("*Please make a prediction first.*")
+            if st.session_state.chat_history:
+                st.markdown('<div class="chat-container">', unsafe_allow_html=True)
+                for i, chat in enumerate(st.session_state.chat_history):
+                    st.markdown(f"**Q{i+1}:** {chat['question']}")
+                    st.markdown(f'<div class="response-box">{chat["answer"]}</div>', unsafe_allow_html=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+            elif query_enabled:
+                st.markdown("*Ask a question about the prediction above.*")
+            else:
+                st.markdown("*Please make a prediction first.*")
 
 # Notes & Disclaimer
 st.markdown("""
